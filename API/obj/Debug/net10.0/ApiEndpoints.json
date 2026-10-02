@@ -1,0 +1,18 @@
+[
+  {
+    "ContainingType": "API.Controllers.RoleController",
+    "Method": "CreateRole",
+    "RelativePath": "api/roles",
+    "HttpMethod": "POST",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "dto",
+        "Type": "Application.DTOs.CreateRoleDto",
+        "IsRequired": true
+      }
+    ],
+    "ReturnTypes": []
+  }
+]

@@ -82,7 +82,6 @@ C:\Users\osama\source\repos\BVG\API\obj\Debug\net10.0\staticwebassets.build.json
 C:\Users\osama\source\repos\BVG\API\obj\Debug\net10.0\staticwebassets.development.json
 C:\Users\osama\source\repos\BVG\API\obj\Debug\net10.0\staticwebassets.build.endpoints.json
 C:\Users\osama\source\repos\BVG\API\obj\Debug\net10.0\swae.build.ex.cache
-C:\Users\osama\source\repos\BVG\API\obj\Debug\net10.0\staticwebassets.upToDateCheck.txt
 C:\Users\osama\source\repos\BVG\API\obj\Debug\net10.0\API.csproj.Up2Date
 C:\Users\osama\source\repos\BVG\API\obj\Debug\net10.0\API.dll
 C:\Users\osama\source\repos\BVG\API\obj\Debug\net10.0\refint\API.dll

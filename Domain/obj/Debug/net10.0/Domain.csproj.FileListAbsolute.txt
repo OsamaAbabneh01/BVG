@@ -9,4 +9,3 @@ C:\Users\osama\source\repos\BVG\Domain\obj\Debug\net10.0\Domain.dll
 C:\Users\osama\source\repos\BVG\Domain\obj\Debug\net10.0\refint\Domain.dll
 C:\Users\osama\source\repos\BVG\Domain\obj\Debug\net10.0\Domain.pdb
 C:\Users\osama\source\repos\BVG\Domain\obj\Debug\net10.0\ref\Domain.dll
-C:\Users\osama\source\repos\BVG\Domain\obj\Debug\net10.0\Domain.csproj.Up2Date

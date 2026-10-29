@@ -1,0 +1,10 @@
+services:
+  api:
+    image: bvg
+    container_name: bvg
+    ports:
+      - "5000:5000"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ConnectionStrings__DefaultConnection: "Server=127.0.0.1,15433;User Id=sa;Password=P@ssw0rd;Database=BVG_DB;Trusted_Connection=True;TrustServerCertificate=True;"
+      Jwt__SecretKey: "csjabJBYfrd827g##^%R^(*(^gbkjxu82ey"

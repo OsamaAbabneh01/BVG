@@ -12,6 +12,6 @@ namespace Domain.Interfaces
 
         Task<Role?> GetById(Guid id);
 
-        Task<List<Role>> Where(Expression<Func<Role, bool>> predicate);
+        Task<List<Role>> WhereAsync(Expression<Func<Role, bool>> expression);
     }
 }

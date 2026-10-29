@@ -13,3 +13,8 @@ C:\Users\osama\source\repos\BVG\Application\obj\Debug\net10.0\Application.dll
 C:\Users\osama\source\repos\BVG\Application\obj\Debug\net10.0\refint\Application.dll
 C:\Users\osama\source\repos\BVG\Application\obj\Debug\net10.0\Application.pdb
 C:\Users\osama\source\repos\BVG\Application\obj\Debug\net10.0\ref\Application.dll
+C:\Users\osama\source\repos\BVG\Application\obj\Debug\net10.0\API.Resources.ErrorMessages.resources
+C:\Users\osama\source\repos\BVG\Application\obj\Debug\net10.0\API.Resources.ErrorMessages.en.resources
+C:\Users\osama\source\repos\BVG\Application\obj\Debug\net10.0\Application.csproj.GenerateResource.cache
+C:\Users\osama\source\repos\BVG\Application\bin\Debug\net10.0\en\Application.resources.dll
+C:\Users\osama\source\repos\BVG\Application\obj\Debug\net10.0\en\Application.resources.dll

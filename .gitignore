@@ -1,7 +1,0 @@
-.vs/
-# Build output
-**/bin/
-**/obj/
-
-# Cache files
-*.cache

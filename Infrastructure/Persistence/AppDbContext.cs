@@ -20,6 +20,8 @@ public partial class AppDbContext : DbContext
 
     public virtual DbSet<User> Users { get; set; }
 
+    public DbSet<Invoice> Invoices { get; set; }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<BackgroundJob>(entity =>
@@ -31,8 +33,6 @@ public partial class AppDbContext : DbContext
                 .HasFilter("([Status]=(0))");
 
             entity.HasIndex(e => e.LockedUntil, "IX_BackgroundJobs_Processing").HasFilter("([Status]=(1))");
-
-            entity.HasIndex(e => new { e.BatchRunId, e.OfficeId }, "UQ_BackgroundJobs_Batch_Office").IsUnique();
 
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("(sysutcdatetime())");
             entity.Property(e => e.WorkerId).HasMaxLength(100);
@@ -75,6 +75,23 @@ public partial class AppDbContext : DbContext
         modelBuilder.Entity<User>(entity =>
         {
             entity.Property(e => e.Id).ValueGeneratedNever();
+        });
+
+        modelBuilder.Entity<Invoice>(entity =>
+        {
+            entity.ToTable("Invoices");
+
+            entity.HasKey(e => e.Id);
+
+            entity.Property(e => e.Id)
+                .ValueGeneratedOnAdd();
+
+            entity.Property(e => e.InvoiceStatus)
+                .IsRequired();
+
+            entity.Property(e => e.AccountNo)
+                .HasMaxLength(50)
+                .IsRequired();
         });
 
         OnModelCreatingPartial(modelBuilder);

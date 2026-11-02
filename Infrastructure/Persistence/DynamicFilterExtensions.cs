@@ -19,19 +19,16 @@ namespace Infrastructure.Persistence
             var parameter = Expression.Parameter(typeof(T), "x");
             Expression? combined = null;
 
-            var useOr = logicalOperator.Equals(
-                "OR", StringComparison.OrdinalIgnoreCase);
+            var useOr = logicalOperator.Equals("OR", StringComparison.OrdinalIgnoreCase);
 
-            if (!useOr && !logicalOperator.Equals(
-                    "AND", StringComparison.OrdinalIgnoreCase))
+            if (!useOr && !logicalOperator.Equals("AND", StringComparison.OrdinalIgnoreCase))
             {
                 throw new ArgumentException("Operator must be AND or OR.");
             }
 
             foreach (var filter in filters)
             {
-                var (member, guards) = GetMember(
-                    parameter, filter.Field);
+                var (member, guards) = GetMember(parameter, filter.Field);
 
                 var condition = BuildCondition(member, filter);
 
@@ -53,11 +50,7 @@ namespace Infrastructure.Persistence
                 Expression.Lambda<Func<T, bool>>(combined, parameter));
         }
 
-        private static (
-            MemberExpression Member,
-            List<Expression> Guards) GetMember(
-            ParameterExpression parameter,
-            string path)
+        private static (MemberExpression Member,List<Expression> Guards) GetMember(ParameterExpression parameter, string path)
         {
             Expression current = parameter;
             var guards = new List<Expression>();
@@ -96,9 +89,7 @@ namespace Infrastructure.Persistence
             return (member, guards);
         }
 
-        private static Expression BuildCondition(
-            MemberExpression member,
-            DynamicFilter filter)
+        private static Expression BuildCondition(MemberExpression member, DynamicFilter filter)
         {
             var op = filter.Operator.Trim().ToLowerInvariant();
             var type = member.Type;

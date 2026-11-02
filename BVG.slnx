@@ -6,4 +6,5 @@
   <Project Path="Application/Application.csproj" />
   <Project Path="Domain/Domain.csproj" />
   <Project Path="Infrastructure/Infrastructure.csproj" />
+  <Project Path="Worker/Worker.csproj" Id="95a479db-c193-4b11-b8d2-5b747206e232" />
 </Solution>

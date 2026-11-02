@@ -9,7 +9,9 @@ public partial class BackgroundJob
 
     public Guid BatchRunId { get; set; }
 
-    public int OfficeId { get; set; }
+    public long StartInvoiceId { get; set; }
+
+    public long EndInvoiceId { get; set; }
 
     public byte Status { get; set; }
 

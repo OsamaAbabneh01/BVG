@@ -15,7 +15,7 @@ namespace Domain.Interfaces
 
         Task<List<User>> WhereAsync(Expression<Func<User, bool>> expression);
 
-        Task<List<User>> GetAllAsync();
+        //Task<List<User>> GetAllAsync();
 
         Task<User?> GetByUsernameWithPermissions(string username);
 

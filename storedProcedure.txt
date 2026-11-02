@@ -1,0 +1,199 @@
+USE [BVG_DB]
+GO
+/****** Object:  StoredProcedure [dbo].[ClaimNextBackgroundJob]    Script Date: 11/2/2026 12:15:29 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+ALTER   PROCEDURE [dbo].[ClaimNextBackgroundJob]
+    @WorkerId NVARCHAR(100),
+    @LeaseSeconds INT = 300,
+    @MaxAttempts INT = 3
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    IF @LeaseSeconds <= 0
+        THROW 50001, 'LeaseSeconds must be greater than zero.', 1;
+
+    IF @MaxAttempts <= 0
+        THROW 50004, 'MaxAttempts must be greater than zero.', 1;
+
+    DECLARE @Now DATETIME2 = SYSUTCDATETIME();
+
+    ;WITH NextJob AS
+    (
+        SELECT TOP (1) *
+        FROM dbo.BackgroundJobs WITH (UPDLOCK, READPAST, ROWLOCK)
+        WHERE
+            (
+                Status = 0
+                OR
+                (
+                    Status = 1
+                    AND LockedUntil <= @Now
+                )
+            )
+            AND AttemptCount < @MaxAttempts
+        ORDER BY Priority DESC, CreatedAt ASC, Id ASC
+    )
+    UPDATE NextJob
+    SET
+        Status = 1,
+        WorkerId = @WorkerId,
+        StartedAt = @Now,
+        LockedUntil = DATEADD(SECOND, @LeaseSeconds, @Now),
+        AttemptCount = AttemptCount + 1
+    OUTPUT
+        inserted.Id,
+        inserted.BatchRunId,
+        inserted.StartInvoiceId,
+        inserted.EndInvoiceId,
+        inserted.Status,
+        inserted.AttemptCount,
+        inserted.WorkerId,
+        inserted.LockedUntil;
+END;
+
+
+
+
+USE [BVG_DB]
+GO
+/****** Object:  StoredProcedure [dbo].[CompleteBackgroundJob]    Script Date: 11/2/2026 12:16:07 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER   PROCEDURE [dbo].[CompleteBackgroundJob]
+    @JobId BIGINT,
+    @WorkerId NVARCHAR(100)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    UPDATE dbo.BackgroundJobs
+    SET
+        Status = 2,
+        CompletedAt = SYSUTCDATETIME(),
+        WorkerId = NULL,
+        LockedUntil = NULL,
+        ErrorMessage = NULL
+    WHERE Id = @JobId
+      AND Status = 1
+      AND WorkerId = @WorkerId;
+
+    IF @@ROWCOUNT = 0
+        THROW 50002, 'Background job was not found or is not owned by this worker.', 1;
+END;
+
+
+
+USE [BVG_DB]
+GO
+/****** Object:  StoredProcedure [dbo].[FailBackgroundJob]    Script Date: 11/2/2026 12:16:15 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER   PROCEDURE [dbo].[FailBackgroundJob]
+    @JobId BIGINT,
+    @WorkerId NVARCHAR(100),
+    @ErrorMessage NVARCHAR(MAX),
+    @MaxAttempts INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    IF @MaxAttempts <= 0
+        THROW 50006, 'MaxAttempts must be greater than zero.', 1;
+
+    UPDATE dbo.BackgroundJobs
+    SET
+        Status = CASE
+            WHEN AttemptCount >= @MaxAttempts THEN 3
+            ELSE 0
+        END,
+        ErrorMessage = @ErrorMessage,
+        LockedUntil = NULL,
+        WorkerId = NULL
+    WHERE Id = @JobId
+      AND Status = 1
+      AND WorkerId = @WorkerId;
+
+    IF @@ROWCOUNT = 0
+        THROW 50003, 'Background job was not found or is not owned by this worker.', 1;
+END;
+
+
+
+USE [BVG_DB]
+GO
+/****** Object:  StoredProcedure [dbo].[FailExpiredBackgroundJobs]    Script Date: 11/2/2026 12:16:23 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+ALTER   PROCEDURE [dbo].[FailExpiredBackgroundJobs]
+    @MaxAttempts INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    IF @MaxAttempts <= 0
+        THROW 50005, 'MaxAttempts must be greater than zero.', 1;
+
+    DECLARE @Now DATETIME2 = SYSUTCDATETIME();
+
+    UPDATE dbo.BackgroundJobs
+    SET
+        Status = 3,
+        LockedUntil = NULL,
+        ErrorMessage = N'Maximum attempts exceeded after lease expiration.'
+    WHERE Status = 1
+      AND LockedUntil <= @Now
+      AND AttemptCount >= @MaxAttempts;
+END;
+
+
+
+USE [BVG_DB]
+GO
+/****** Object:  StoredProcedure [dbo].[RenewBackgroundJobLease]    Script Date: 11/2/2026 12:16:30 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER   PROCEDURE [dbo].[RenewBackgroundJobLease]
+    @JobId BIGINT,
+    @WorkerId NVARCHAR(100),
+    @LeaseSeconds INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    IF @LeaseSeconds <= 0
+        THROW 50007, 'LeaseSeconds must be greater than zero.', 1;
+
+    UPDATE dbo.BackgroundJobs
+    SET
+        LockedUntil = DATEADD(
+            SECOND,
+            @LeaseSeconds,
+            SYSUTCDATETIME()
+        )
+    WHERE Id = @JobId
+      AND Status = 1
+      AND WorkerId = @WorkerId
+      AND LockedUntil > SYSUTCDATETIME();
+
+    IF @@ROWCOUNT = 0
+        THROW 50008, 'Cannot renew lease. Job is not owned or lease has expired.', 1;
+END;

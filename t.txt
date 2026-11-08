@@ -1,0 +1,60 @@
+public async Task<BVGResponse<object>> TakeSnapshot(SnapshotDto dto)
+{
+    var cycle = await _cycleInfoRepository.GetFirstOrDefaultAsync(c => c.CycleDate.Year == int.Parse(dto.Year) && c.CycleDate.Month == int.Parse(dto.Month));
+    if (cycle == null)
+    {
+        var newCycle = new CycleInfo
+        {
+            CycleDate = new DateOnly(int.Parse(dto.Year), int.Parse(dto.Month), 1),
+            FingerprintOk = "",
+            ReferenceOk = "",
+            ReferenceReason = "",
+            Status = 0,
+            StartDate = DateTime.UtcNow,
+            EndDate = null,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = null,
+        };
+
+        var bulk = new SnapshotBulk
+        {
+            Cycle = newCycle,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = null,
+            IsChecked = false,
+        };
+
+        try
+        {
+            await _unitOfWorkService.BeginTransactionAsync();
+            await _cycleInfoRepository.AddCycleInfo(newCycle);
+            await _snapshotBulkRepository.AddSnapshotBulk(bulk);
+            await _unitOfWorkService.CommitAsync();
+        }
+        catch(Exception ex)
+        {
+            _logger.LogError(ex.Message);
+            await _unitOfWorkService.RollbackAsync();
+            throw;
+        }
+    }
+    else
+    {
+        var isChecked = cycle.SnapshotBulks.Any(bulk => bulk.IsChecked == true);
+        if (!isChecked)
+        {
+            return BVGResponse<object>.Fail(BVGStatusCode.Conflict, BVGErrorCode.VerificationRequired);
+        }
+
+        var bulk = new SnapshotBulk
+        {
+            CycleId = cycle.Id,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = null,
+            IsChecked = false,
+        };
+
+        await _snapshotBulkRepository.AddSnapshotBulk(bulk);
+    }
+    return BVGResponse<object>.Success(null, BVGMessage.ExecuteSuccessfully, BVGStatusCode.Ok);
+}

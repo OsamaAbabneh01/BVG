@@ -1,272 +1,84 @@
-
-using BVG.API.Extensions;
-using BVG.Infrastructure.RealTime;
-using BVG.Infrastructure.Seeders;
-using CommonResources.Middlewares;
-//using SDK.DependencyInjection;
-
-
-var builder = WebApplication.CreateBuilder(args);
-string configFolderPath = builder.Configuration["FolderConfigPath"] ?? AppContext.BaseDirectory;
-string jsonFilePath = Path.Combine(configFolderPath);
-builder.Configuration.AddJsonFile(path: jsonFilePath, optional: true, reloadOnChange: true);
-
-builder.Services.AddDependencyInjection(builder.Configuration);
-//builder.Services.BVGBACKGROUNDSDK(builder.Configuration);
-
-var corsOrigins = builder.Configuration.GetValue<string>("CorsOrigins") ?? "https://localhost:4200";
-
-builder.Services.AddCors(options =>
+public async Task<BVGResponse<object>> TakeSnapshot(SnapshotDto dto)
 {
-    options.AddPolicy("AngularPolicy", policy =>
+    var options = new TransactionOptions
     {
-        policy.WithOrigins(corsOrigins)
-              .AllowAnyHeader()
-              .AllowAnyMethod()
-              .AllowCredentials();
-    });
-});
+        IsolationLevel = System.Transactions.IsolationLevel.ReadCommitted,
+        Timeout = TimeSpan.FromMinutes(30)
+    };
 
-
-var app = builder.Build();
-
-using (var scope = app.Services.CreateScope())
-{
-    var services = scope.ServiceProvider;
     try
     {
-        var seeder = services.GetRequiredService<DatabaseSeeder>();
-        await seeder.SeedAsync();
+        using var scope = new TransactionScope(
+            TransactionScopeOption.Required,
+            options,
+            TransactionScopeAsyncFlowOption.Enabled);
+
+        var year = int.Parse(dto.Year);
+        var month = int.Parse(dto.Month);
+
+        var cycle = await _cycleInfoRepository
+            .GetFirstOrDefaultAsync(c =>
+                c.CycleDate.Year == year &&
+                c.CycleDate.Month == month);
+
+        if (cycle == null)
+        {
+            cycle = new CycleInfo
+            {
+                CycleDate = new DateOnly(year, month, 1),
+                FingerprintOk = "",
+                ReferenceOk = "",
+                ReferenceReason = "",
+                Status = 0,
+                StartDate = DateTime.UtcNow,
+                EndDate = null,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = null
+            };
+
+            await _cycleInfoRepository.AddCycleInfo(cycle);
+        }
+        else
+        {
+            var isChecked = cycle.SnapshotBulks.Any(b => b.IsChecked);
+
+            if (!isChecked)
+            {
+                return BVGResponse<object>.Fail(
+                    BVGStatusCode.Conflict,
+                    BVGErrorCode.VerificationRequired);
+            }
+        }
+
+        var bulk = new SnapshotBulk
+        {
+            CycleId = cycle.Id,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = null,
+            IsChecked = false
+        };
+
+        await _snapshotBulkRepository.AddSnapshotBulk(bulk);
+
+        // Save changes in the first SQL Server instance
+        await _unitOfWorkService.SaveChangesAsync();
+
+        // Execute procedure in the second SQL Server instance
+        await _snapshotRepository.TakeSnapshotAsync(
+            cycle.Id,
+            bulk.Id);
+
+        // Mark the distributed transaction as successful
+        scope.Complete();
+
+        return BVGResponse<object>.Success(
+            null,
+            BVGMessage.ExecuteSuccessfully,
+            BVGStatusCode.Ok);
     }
     catch (Exception ex)
     {
-        var logger = services.GetRequiredService<ILogger<Program>>();
-        logger.LogError(ex.Message);
+        _logger.LogError(ex, "TakeSnapshot failed");
+        throw;
     }
 }
-
-if (app.Environment.IsDevelopment())
-{
-    app.UseSwagger();
-    app.UseSwaggerUI();
-}
-
-var supportedCultures = new[] { "ar", "en" };
-var localizationOptions = new RequestLocalizationOptions()
-    .SetDefaultCulture("ar")
-    .AddSupportedCultures(supportedCultures)
-    .AddSupportedUICultures(supportedCultures);
-
-app.MapHub<NotificationHub>("/hubs/notifications");
-
-app.UseRequestLocalization(localizationOptions);
-
-app.UseMiddleware<ReadHeaderMiddleware>();
-
-app.UseExceptionHandler();
-
-app.UseHttpsRedirection();
-
-app.MapControllers();
-
-app.UseRouting();
-app.UseCors("AngularPolicy");
-
-app.UseAuthentication();
-
-app.UseAuthorization();
-
-app.Run();
-
-using BVG.API.Authorization;
-using BVG.API.Exceptions;
-using BVG.Application.Common;
-using BVG.Application.Configuration;
-using BVG.Application.Services;
-using BVG.Application.Services.BackgroundJobs;
-using BVG.Application.Services.BVGExecute;
-using BVG.Application.Services.Jwt;
-using BVG.Application.Services.Notification;
-using BVG.Application.Services.Otp;
-using BVG.Application.Services.Paginator;
-using BVG.Application.Services.Permission;
-using BVG.Application.Services.RoleService;
-using BVG.Application.Services.Snapshot;
-using BVG.Application.Services.UnitOfWork;
-using BVG.Application.Strategy;
-using BVG.Application.Strategy.Layer.Layers;
-using BVG.Application.Strategy.LayerRule;
-using BVG.Domain.Enums;
-using BVG.Domain.Interfaces;
-using BVG.Infrastructure;
-using BVG.Infrastructure.Persistence;
-using BVG.Infrastructure.Repositories;
-using BVG.Infrastructure.Seeders;
-using BVG.Infrastructure.Services;
-using CommonResources.GeneralClasses;
-using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.IdentityModel.Tokens;
-using StackExchange.Redis;
-using System.Text;
-
-namespace BVG.API.Extensions
-{
-    public static class DependencyInjectionConfiguration
-    {
-        public static IServiceCollection AddDependencyInjection(this IServiceCollection services, IConfiguration configuration)
-        {
-            services.AddSignalR();
-            services.AddScoped<IAuthService, AuthService>();
-            services.AddScoped<IUnitOfWorkService, UnitOfWorkService>();
-            services.AddScoped<IRoleService, RoleService>();
-            services.AddScoped<IRoleRepository, RoleRepository>();
-            services.AddScoped<IUserRepository, UserRepository>();
-            services.AddScoped<IUserService, UserService>();
-            services.AddScoped<IPaginatorService, PaginatorService>();
-            services.AddScoped<IAuditLogRepository, AuditLogRepository>();
-            services.AddScoped<IPermissionRepository, PermissionRepository>();
-            services.AddScoped<IRuleCatalogRepository, RuleCatalogRepository>();
-            services.AddScoped<IRuleModeHistoryRepository, RuleModeHistoryRepository>();
-            services.AddScoped<ICycleInfoRepository, CycleInfoRepository>();
-            services.AddScoped<IRuleModeHistoryService, RuleModeHistoryService>();
-            services.AddScoped<IFingerprintService, FingerprintService>();
-            services.AddScoped<IFingerprintRepository, FingerprintRepository>();
-            services.AddScoped<ISnapshotBulkService, SnapshotBulkService>();
-            services.AddScoped<ISnapshotBulkRepository, SnapshotBulkRepository>();
-            services.AddScoped<ICycleInfoService, CycleInfoService>();
-            services.AddScoped<IDualAuthorizationRequestService, DualAuthorizationRequestService>();
-            services.AddScoped<IDualAuthorizationRequestRepository, DualAuthorizationRequestRepository>();
-            services.AddScoped<IInvoiceExceptionRepository, InvoiceExceptionRepository>();
-            services.AddScoped<IInvoiceExceptionService, InvoiceExceptionService>();
-            services.AddScoped<IRuleCatalogService, RuleCatalogService>();
-            services.AddScoped<IRuleFamilyRepository, RuleFamilyRepository>();
-            services.AddScoped<IRuleFamilyService, RuleFamilyService>();
-            services.AddScoped<IPermissionService, PermissionService>();
-            services.AddScoped<IRuleCatalogRepository, RuleCatalogRepository>();
-            services.AddScoped<IRuleCatalogService, RuleCatalogService>();
-            services.AddScoped<IAuditLogService, AuditLogService>();
-            services.AddScoped<IOtpService, OtpService>();
-            services.AddScoped<IOtpRepository, OtpRepository>();
-            services.AddScoped<IGeneralRepository, GeneralRepository>();
-            services.AddScoped<INotificationRepository, NotificationRepository>();
-            services.AddScoped<INotificationService, NotificationService>();
-            services.AddScoped<ISnapshotService, SnapshotService>();
-
-            //DI Layer Strategy
-
-            services.AddScoped<ILayerRuleRunner, LayerRuleRunner>();
-            services.AddScoped<Layer1Strategy>();
-            services.AddScoped<Layer2Strategy>();
-            services.AddScoped<Layer3Strategy>();
-            services.AddScoped<AuditStrategy>();
-            services.AddScoped<IBVGExecuteService, BVGExecutionService>();
-            
-            
-            services.AddScoped<IBackgroundJobService, BackgroundJobService>();
-            services.AddScoped<IBackgroundJobRepository, BackgroundJobRepository>();
-            //===============================================================================
-
-            services.AddControllers()
-             .ConfigureApiBehaviorOptions(options =>
-              {
-                  options.InvalidModelStateResponseFactory = context =>
-                  {
-                      var errors = context.ModelState
-                      .Where(x => x.Value?.Errors.Count > 0)
-                      .ToDictionary(
-                          x => x.Key,
-                          x => x.Value!.Errors.Select(e => e.ErrorMessage).ToArray()
-                          );
-                      var response = BVGResponse<Dictionary<string, string[]>>.Fail(
-                          BVGStatusCode.BadRequest,
-                          BVGErrorCode.ValidationFaied, errors
-                          );
-                      return new ObjectResult(response)
-                      {
-                          StatusCode = response.StatusCode
-                      };
-                  };
-              });
-            services.AddHttpContextAccessor();
-            services.AddLocalization();
-            services.AddExceptionHandler<GlobalExceptionHandler>();
-            services.AddProblemDetails();
-            services.AddSwaggerGen();
-            services.AddScoped<RequestHeadersModel>();
-            services.AddScoped<DatabaseSeeder>();
-            services.AddSingleton<IAuthorizationHandler, PermissionAuthorizationHandler>();
-            services.AddSingleton<IAuthorizationPolicyProvider, PermissionPolicyProvider>();
-            services.AddSingleton<IAuthorizationMiddlewareResultHandler, CustomAuthorizationResultHandler>();
-            services.AddHttpClient<ISmsSender, SmsSender>(c => c.Timeout = TimeSpan.FromSeconds(10));
-
-            services.AddDbContext<AppDbContext>(options =>
-                options.UseSqlServer(configuration.GetConnectionString("DefaultConnection")));
-
-            services.AddDbContext<SnapshotDbContext>(options =>
-                options.UseSqlServer(configuration.GetConnectionString("SnapshotConnection")));
-
-            services
-            .AddOptions<BackgroundJobOptions>()
-            .Bind(configuration.GetSection(BackgroundJobOptions.SectionName))
-            .Validate(options => options.MaxAttempts > 0, "MaxAttempts must be greater than zero.")
-            .Validate(options => options.LeaseSeconds > 0, "LeaseSeconds must be greater than zero.")
-            .Validate(options => options.MaxConcurrentJobs > 0, "MaxConcurrentJobs must be greater than zero.")
-            .Validate(options => options.BulkSize > 0, "BulkSize must be greater than zero.")
-            .ValidateOnStart();
-
-            services
-                .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-                .AddJwtBearer(options =>
-                {
-                    options.TokenValidationParameters = new TokenValidationParameters
-                    {
-                        ValidateIssuer = true,
-                        ValidateAudience = true,
-                        ValidateLifetime = true,
-                        ValidateIssuerSigningKey = true,
-
-                        ValidIssuer = configuration["Jwt:Issuer"],
-                        ValidAudience = configuration["Jwt:Audience"],
-                        IssuerSigningKey = new SymmetricSecurityKey(
-                            Encoding.UTF8.GetBytes(
-                                configuration["Jwt:Key"]!
-                            )
-                        )
-                    };
-
-                    options.Events = new JwtBearerEvents
-                    {
-                        OnChallenge = async context =>
-                        {
-                            context.HandleResponse();
-
-                            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-
-                            context.Response.ContentType = "application/json";
-
-                            var response = BVGResponse<object>.Fail(BVGStatusCode.Unauthorized, BVGErrorCode.Unauthorized);
-
-                            await context.Response.WriteAsJsonAsync(response);
-                        }
-                    };
-                });
-
-            services.AddSingleton<IConnectionMultiplexer>(_ =>
-            {
-                var opts = ConfigurationOptions.Parse(configuration.GetConnectionString("Redis")!);
-                opts.AbortOnConnectFail = false;
-                return ConnectionMultiplexer.Connect(opts);
-            });
-
-            services.Configure<OtpSettings>(configuration.GetSection("Otp"));
-            services.AddScoped<IOtpService, OtpService>();
-
-            return services;
-        }
-    }
-}
-
-

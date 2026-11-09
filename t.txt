@@ -1,49 +1,54 @@
 public async Task<BVGResponse<object>> TakeSnapshot(SnapshotDto dto)
 {
-    var cycle = await _cycleInfoRepository.GetFirstOrDefaultAsync(c => c.CycleDate.Year == int.Parse(dto.Year) && c.CycleDate.Month == int.Parse(dto.Month));
-    if (cycle == null)
+    var options = new TransactionOptions
     {
-        var newCycle = new CycleInfo
-        {
-            CycleDate = new DateOnly(int.Parse(dto.Year), int.Parse(dto.Month), 1),
-            FingerprintOk = "",
-            ReferenceOk = "",
-            ReferenceReason = "",
-            Status = 0,
-            StartDate = DateTime.UtcNow,
-            EndDate = null,
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = null,
-        };
+        IsolationLevel = System.Transactions.IsolationLevel.ReadCommitted,
+        Timeout = TimeSpan.FromMinutes(30)
+    };
 
-        var bulk = new SnapshotBulk
-        {
-            Cycle = newCycle,
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = null,
-            IsChecked = false,
-        };
+    using var scope = new TransactionScope(
+        TransactionScopeOption.Required,
+        options,
+        TransactionScopeAsyncFlowOption.Enabled);
 
-        try
-        {
-            await _unitOfWorkService.BeginTransactionAsync();
-            await _cycleInfoRepository.AddCycleInfo(newCycle);
-            await _snapshotBulkRepository.AddSnapshotBulk(bulk);
-            await _unitOfWorkService.CommitAsync();
-        }
-        catch(Exception ex)
-        {
-            _logger.LogError(ex.Message);
-            await _unitOfWorkService.RollbackAsync();
-            throw;
-        }
-    }
-    else
+    try
     {
-        var isChecked = cycle.SnapshotBulks.Any(bulk => bulk.IsChecked == true);
-        if (!isChecked)
+        var year = int.Parse(dto.Year);
+        var month = int.Parse(dto.Month);
+
+        var cycle = await _cycleInfoRepository
+            .GetFirstOrDefaultAsync(c =>
+                c.CycleDate.Year == year &&
+                c.CycleDate.Month == month);
+
+        if (cycle == null)
         {
-            return BVGResponse<object>.Fail(BVGStatusCode.Conflict, BVGErrorCode.VerificationRequired);
+            cycle = new CycleInfo
+            {
+                CycleDate = new DateOnly(year, month, 1),
+                FingerprintOk = "",
+                ReferenceOk = "",
+                ReferenceReason = "",
+                Status = 0,
+                StartDate = DateTime.UtcNow,
+                EndDate = null,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = null
+            };
+
+            await _cycleInfoRepository.AddCycleInfo(cycle);
+        }
+        else
+        {
+            var isChecked = cycle.SnapshotBulks
+                .Any(b => b.IsChecked);
+
+            if (!isChecked)
+            {
+                return BVGResponse<object>.Fail(
+                    BVGStatusCode.Conflict,
+                    BVGErrorCode.VerificationRequired);
+            }
         }
 
         var bulk = new SnapshotBulk
@@ -51,10 +56,30 @@ public async Task<BVGResponse<object>> TakeSnapshot(SnapshotDto dto)
             CycleId = cycle.Id,
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = null,
-            IsChecked = false,
+            IsChecked = false
         };
 
         await _snapshotBulkRepository.AddSnapshotBulk(bulk);
+
+        // Save changes in AppDbContext
+        await _appUnitOfWork.SaveChangesAsync();
+
+        // Execute procedure using SnapshotDbContext
+        await _snapshotRepository.TakeSnapshotAsync(
+            cycle.Id,
+            bulk.Id);
+
+        // Commit both SQL Server transactions
+        scope.Complete();
+
+        return BVGResponse<object>.Success(
+            null,
+            BVGMessage.ExecuteSuccessfully,
+            BVGStatusCode.Ok);
     }
-    return BVGResponse<object>.Success(null, BVGMessage.ExecuteSuccessfully, BVGStatusCode.Ok);
+    catch (Exception ex)
+    {
+        _logger.LogError(ex, "TakeSnapshot failed");
+        throw;
+    }
 }

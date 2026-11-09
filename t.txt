@@ -1,85 +1,312 @@
-public async Task<BVGResponse<object>> TakeSnapshot(SnapshotDto dto)
-{
-    var options = new TransactionOptions
-    {
-        IsolationLevel = System.Transactions.IsolationLevel.ReadCommitted,
-        Timeout = TimeSpan.FromMinutes(30)
-    };
-
-    using var scope = new TransactionScope(
-        TransactionScopeOption.Required,
-        options,
-        TransactionScopeAsyncFlowOption.Enabled);
-
-    try
-    {
-        var year = int.Parse(dto.Year);
-        var month = int.Parse(dto.Month);
-
-        var cycle = await _cycleInfoRepository
-            .GetFirstOrDefaultAsync(c =>
-                c.CycleDate.Year == year &&
-                c.CycleDate.Month == month);
-
-        if (cycle == null)
+        [HttpPost("pull")]
+        public async Task<IActionResult> PullSnapshot([FromBody] SnapshotDto dto)
         {
-            cycle = new CycleInfo
+            var result = await _snapshotService.TakeSnapshot(dto);
+            return Send(result);
+        }
+
+
+using BVG.Application.Common;
+using BVG.Application.Services.UnitOfWork;
+using BVG.Domain.DTOs;
+using BVG.Domain.Entities;
+using BVG.Domain.Enums;
+using BVG.Domain.Interfaces;
+using Microsoft.Extensions.Logging;
+using System;
+using System.Collections.Generic;
+using System.Text;
+using System.Transactions;
+
+namespace BVG.Application.Services.Snapshot
+{
+    public class SnapshotService : ISnapshotService
+    {
+        private readonly ICycleInfoRepository _cycleInfoRepository;
+        private readonly ISnapshotBulkRepository _snapshotBulkRepository;
+        private readonly IUnitOfWorkService _unitOfWorkService;
+        private readonly ISnapshotUnitOfWorkService _snapshotUnitOfWorkService;
+        private readonly ILogger<SnapshotService> _logger;
+
+        public SnapshotService(
+            ICycleInfoRepository cycleInfoRepository,
+            ISnapshotBulkRepository snapshotBulkRepository,
+            IUnitOfWorkService unitOfWorkService,
+            ISnapshotUnitOfWorkService snapshotUnitOfWorkService,
+            ILogger<SnapshotService> logger)
+        {
+            _cycleInfoRepository = cycleInfoRepository;
+            _snapshotBulkRepository = snapshotBulkRepository;
+            _unitOfWorkService = unitOfWorkService;
+            _snapshotUnitOfWorkService = snapshotUnitOfWorkService;
+            _logger = logger;
+        }
+
+        public async Task<BVGResponse<object>> TakeSnapshot(SnapshotDto dto)
+        {
+            var options = new TransactionOptions
             {
-                CycleDate = new DateOnly(year, month, 1),
-                FingerprintOk = "",
-                ReferenceOk = "",
-                ReferenceReason = "",
-                Status = 0,
-                StartDate = DateTime.UtcNow,
-                EndDate = null,
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = null
+                IsolationLevel = IsolationLevel.ReadCommitted,
+                Timeout = TimeSpan.FromMinutes(30)
             };
 
-            await _cycleInfoRepository.AddCycleInfo(cycle);
-        }
-        else
-        {
-            var isChecked = cycle.SnapshotBulks
-                .Any(b => b.IsChecked);
+            using var scope = new TransactionScope(
+                TransactionScopeOption.Required,
+                options,
+                TransactionScopeAsyncFlowOption.Enabled);
 
-            if (!isChecked)
+            try
             {
-                return BVGResponse<object>.Fail(
-                    BVGStatusCode.Conflict,
-                    BVGErrorCode.VerificationRequired);
+                var year = int.Parse(dto.Year);
+                var month = int.Parse(dto.Month);
+
+                var cycle = await _cycleInfoRepository
+                    .GetFirstOrDefaultAsync(c =>
+                        c.CycleDate.Year == year &&
+                        c.CycleDate.Month == month);
+
+                if (cycle == null)
+                {
+                    cycle = new CycleInfo
+                    {
+                        CycleDate = new DateOnly(year, month, 1),
+                        FingerprintOk = "",
+                        ReferenceOk = "",
+                        ReferenceReason = "",
+                        Status = 0,
+                        StartDate = DateTime.UtcNow,
+                        EndDate = null,
+                        CreatedAt = DateTime.UtcNow,
+                        UpdatedAt = null
+                    };
+
+                    await _cycleInfoRepository.AddCycleInfo(cycle);
+                }
+                else
+                {
+                    var isChecked = cycle.SnapshotBulks
+                        .Any(b => b.IsChecked);
+
+                    if (!isChecked)
+                    {
+                        return BVGResponse<object>.Fail(
+                            BVGStatusCode.Conflict,
+                            BVGErrorCode.VerificationRequired);
+                    }
+                }
+
+                var bulk = new SnapshotBulk
+                {
+                    CycleId = cycle.Id,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = null,
+                    IsChecked = false
+                };
+
+                await _snapshotBulkRepository.AddSnapshotBulk(bulk);
+
+                // Save changes in AppDbContext
+                await _snapshotUnitOfWorkService.CommitAsync();
+
+                // Execute procedure using SnapshotDbContext
+                await _snapshotRepository.TakeSnapshotAsync(
+                    cycle.Id,
+                    bulk.Id);
+
+                // Commit both SQL Server transactions
+                scope.Complete();
+
+                return BVGResponse<object>.Success(
+                    null,
+                    BVGMessage.ExecuteSuccessfully,
+                    BVGStatusCode.Ok);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "TakeSnapshot failed");
+                throw;
+            }
+        }
+    }
+}
+
+using BVG.Application.Services.UnitOfWork;
+using BVG.Infrastructure.Persistence;
+using Microsoft.EntityFrameworkCore.Storage;
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Text;
+
+namespace BVG.Infrastructure.Services
+{
+    public class SnapshotUnitOfWorkService : ISnapshotUnitOfWorkService
+    {
+        private readonly SnapshotDbContext _context;
+        private IDbContextTransaction? _transaction;
+
+        private int _transactionDepth = 0;
+
+        private bool _disposed = false;
+
+        public SnapshotUnitOfWorkService(SnapshotDbContext context)
+        {
+            _context = context;
+        }
+
+        public async Task BeginTransactionAsync(IsolationLevel isolationLevel = IsolationLevel.ReadCommitted)
+        {
+            ThrowIfDisposed();
+
+            if (_transactionDepth == 0)
+            {
+                _transaction = await _context.Database.BeginTransactionAsync(isolationLevel);
+            }
+            _transactionDepth++;
+        }
+
+        public async Task CommitAsync()
+        {
+            ThrowIfDisposed();
+
+            if (_transactionDepth == 0)
+                throw new InvalidOperationException("Transaction not started.");
+
+            _transactionDepth--;
+
+            if (_transactionDepth == 0)
+            {
+                try
+                {
+                    await _context.SaveChangesAsync();
+                    if (_transaction != null)
+                    {
+                        await _transaction.CommitAsync();
+                    }
+                }
+                catch
+                {
+                    await RollbackInternalAsync();
+                    throw;
+                }
+                finally
+                {
+                    await DisposeTransactionAsync();
+                }
             }
         }
 
-        var bulk = new SnapshotBulk
+        public async Task RollbackAsync()
         {
-            CycleId = cycle.Id,
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = null,
-            IsChecked = false
-        };
+            ThrowIfDisposed();
+            if (_transactionDepth == 0)
+                return;
 
-        await _snapshotBulkRepository.AddSnapshotBulk(bulk);
+            await RollbackInternalAsync();
+            await DisposeTransactionAsync();
+            _transactionDepth = 0;
+        }
 
-        // Save changes in AppDbContext
-        await _appUnitOfWork.SaveChangesAsync();
+        public void ClearTrackedChanges()
+        {
+            ThrowIfDisposed();
+            _context.ChangeTracker.Clear();
+        }
 
-        // Execute procedure using SnapshotDbContext
-        await _snapshotRepository.TakeSnapshotAsync(
-            cycle.Id,
-            bulk.Id);
+        public bool HasChanges()
+        {
+            ThrowIfDisposed();
+            return _context.ChangeTracker.HasChanges();
+        }
 
-        // Commit both SQL Server transactions
-        scope.Complete();
+        private async Task RollbackInternalAsync()
+        {
+            if (_transaction != null)
+            {
+                await _transaction.RollbackAsync();
+            }
+        }
 
-        return BVGResponse<object>.Success(
-            null,
-            BVGMessage.ExecuteSuccessfully,
-            BVGStatusCode.Ok);
-    }
-    catch (Exception ex)
-    {
-        _logger.LogError(ex, "TakeSnapshot failed");
-        throw;
+        private async Task DisposeTransactionAsync()
+        {
+            if (_transaction != null)
+            {
+                await _transaction.DisposeAsync();
+                _transaction = null;
+            }
+        }
+
+        private void ThrowIfDisposed()
+        {
+            if (_disposed)
+                throw new ObjectDisposedException(nameof(UnitOfWorkService));
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            if (_disposed)
+                return;
+
+            if (_transaction != null)
+            {
+                await _transaction.DisposeAsync();
+                _transaction = null;
+            }
+
+            _disposed = true;
+        }
     }
 }
+
+    public partial class SnapshotDbContext : DbContext
+    {
+        public SnapshotDbContext(DbContextOptions<SnapshotDbContext> options)
+        : base(options)
+        {
+        }
+    }
+
+public partial class AppDbContext : DbContext
+{
+    public AppDbContext(DbContextOptions<AppDbContext> options)
+        : base(options)
+    {
+    }
+
+    public virtual DbSet<AuditLog> AuditLogs { get; set; }
+
+    public virtual DbSet<BackgroundJob> BackgroundJobs { get; set; }
+
+    public virtual DbSet<BvgUser> BvgUsers { get; set; }
+
+    public virtual DbSet<CycleInfo> CycleInfos { get; set; }
+
+    public virtual DbSet<CycleInfoRuningStatus> CycleInfoRuningStatuses { get; set; }
+
+    public virtual DbSet<DualAuthorizationApproval> DualAuthorizationApprovals { get; set; }
+
+    public virtual DbSet<DualAuthorizationRequest> DualAuthorizationRequests { get; set; }
+
+    public virtual DbSet<Fingerprint> Fingerprints { get; set; }
+
+    public virtual DbSet<InvoiceException> InvoiceExceptions { get; set; }
+
+    public virtual DbSet<OtpCode> OtpCodes { get; set; }
+
+    public virtual DbSet<Permission> Permissions { get; set; }
+
+    public virtual DbSet<Role> Roles { get; set; }
+
+    public virtual DbSet<RolePermission> RolePermissions { get; set; }
+
+    public virtual DbSet<RuleCatalog> RuleCatalogs { get; set; }
+
+    public virtual DbSet<RuleFamily> RuleFamilies { get; set; }
+
+    public virtual DbSet<RuleModeHistory> RuleModeHistories { get; set; }
+
+    public virtual DbSet<SnapshotBulk> SnapshotBulks { get; set; }
+
+    public virtual DbSet<UserRole> UserRoles { get; set; }
+
+

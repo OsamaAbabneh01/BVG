@@ -1,84 +1,116 @@
 public async Task<BVGResponse<object>> TakeSnapshot(SnapshotDto dto)
 {
-    var options = new TransactionOptions
+    var year = int.Parse(dto.Year);
+    var month = int.Parse(dto.Month);
+
+    var cycle = await _cycleInfoRepository
+        .GetFirstOrDefaultAsync(c =>
+            c.CycleDate.Year == year &&
+            c.CycleDate.Month == month);
+
+    if (cycle == null)
     {
-        IsolationLevel = System.Transactions.IsolationLevel.ReadCommitted,
-        Timeout = TimeSpan.FromMinutes(30)
-    };
-
-    try
-    {
-        using var scope = new TransactionScope(
-            TransactionScopeOption.Required,
-            options,
-            TransactionScopeAsyncFlowOption.Enabled);
-
-        var year = int.Parse(dto.Year);
-        var month = int.Parse(dto.Month);
-
-        var cycle = await _cycleInfoRepository
-            .GetFirstOrDefaultAsync(c =>
-                c.CycleDate.Year == year &&
-                c.CycleDate.Month == month);
-
-        if (cycle == null)
+        cycle = new CycleInfo
         {
-            cycle = new CycleInfo
-            {
-                CycleDate = new DateOnly(year, month, 1),
-                FingerprintOk = "",
-                ReferenceOk = "",
-                ReferenceReason = "",
-                Status = 0,
-                StartDate = DateTime.UtcNow,
-                EndDate = null,
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = null
-            };
-
-            await _cycleInfoRepository.AddCycleInfo(cycle);
-        }
-        else
-        {
-            var isChecked = cycle.SnapshotBulks.Any(b => b.IsChecked);
-
-            if (!isChecked)
-            {
-                return BVGResponse<object>.Fail(
-                    BVGStatusCode.Conflict,
-                    BVGErrorCode.VerificationRequired);
-            }
-        }
-
-        var bulk = new SnapshotBulk
-        {
-            CycleId = cycle.Id,
+            CycleDate = new DateOnly(year, month, 1),
+            FingerprintOk = "",
+            ReferenceOk = "",
+            ReferenceReason = "",
+            Status = 0,
+            StartDate = DateTime.UtcNow,
+            EndDate = null,
             CreatedAt = DateTime.UtcNow,
-            UpdatedAt = null,
-            IsChecked = false
+            UpdatedAt = null
         };
 
-        await _snapshotBulkRepository.AddSnapshotBulk(bulk);
+        await _cycleInfoRepository.AddCycleInfo(cycle);
 
-        // Save changes in the first SQL Server instance
-        await _unitOfWorkService.SaveChangesAsync();
-
-        // Execute procedure in the second SQL Server instance
-        await _snapshotRepository.TakeSnapshotAsync(
-            cycle.Id,
-            bulk.Id);
-
-        // Mark the distributed transaction as successful
-        scope.Complete();
-
-        return BVGResponse<object>.Success(
-            null,
-            BVGMessage.ExecuteSuccessfully,
-            BVGStatusCode.Ok);
+        await _snapshotUnitOfWorkService.SaveChangesAsync();
     }
-    catch (Exception ex)
+    else
     {
-        _logger.LogError(ex, "TakeSnapshot failed");
-        throw;
+        var isChecked = cycle.SnapshotBulks
+            .Any(b => b.IsChecked);
+
+        if (!isChecked)
+        {
+            return BVGResponse<object>.Fail(
+                BVGStatusCode.Conflict,
+                BVGErrorCode.VerificationRequired);
+        }
     }
+
+    var bulk = new SnapshotBulk
+    {
+        CycleId = cycle.Id,
+        CreatedAt = DateTime.UtcNow,
+        UpdatedAt = null,
+        IsChecked = false,
+        Status = (byte)SnapshotBulkStatus.Pending,
+        AttemptCount = 0
+    };
+
+    await _snapshotBulkRepository.AddSnapshotBulk(bulk);
+
+    // حفظ سجل الـ Bulk قبل بدء التنفيذ
+    await _snapshotUnitOfWorkService.SaveChangesAsync();
+
+    var billingCycle = $"{year}{month:D2}";
+
+    for (int attempt = 1; attempt <= _options.MaxRetryAttempts; attempt++)
+    {
+        try
+        {
+            bulk.Status = (byte)SnapshotBulkStatus.Processing;
+            bulk.AttemptCount = attempt;
+            bulk.StartedAt = DateTime.UtcNow;
+            bulk.UpdatedAt = DateTime.UtcNow;
+            bulk.ErrorMessage = null;
+
+            await _snapshotUnitOfWorkService.SaveChangesAsync();
+
+            // تنفيذ Stored Procedure
+            await _snapshotRepository.TakeSnapshotAsync(billingCycle);
+
+            // نجاح العملية
+            bulk.Status = (byte)SnapshotBulkStatus.Completed;
+            bulk.CompletedAt = DateTime.UtcNow;
+            bulk.UpdatedAt = DateTime.UtcNow;
+            bulk.ErrorMessage = null;
+
+            await _snapshotUnitOfWorkService.SaveChangesAsync();
+
+            return BVGResponse<object>.Success(
+                null,
+                BVGMessage.ExecuteSuccessfully,
+                BVGStatusCode.Ok);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "Snapshot failed for BillingCycle {BillingCycle}. Attempt {Attempt}",
+                billingCycle,
+                attempt);
+
+            bulk.ErrorMessage = ex.Message;
+            bulk.UpdatedAt = DateTime.UtcNow;
+
+            bulk.Status = attempt == _options.MaxRetryAttempts
+                ? (byte)SnapshotBulkStatus.Failed
+                : (byte)SnapshotBulkStatus.Pending;
+
+            await _snapshotUnitOfWorkService.SaveChangesAsync();
+
+            if (attempt < _options.MaxRetryAttempts)
+            {
+                await Task.Delay(
+                    TimeSpan.FromSeconds(_options.RetryDelaySeconds));
+            }
+        }
+    }
+
+    return BVGResponse<object>.Fail(
+        BVGStatusCode.Conflict,
+        BVGErrorCode.ExecuteFailed);
 }

@@ -232,6 +232,11 @@ namespace Infrastructure.Persistence
             if (type == typeof(Guid))
                 return Guid.Parse(value.GetString()!);
 
+            if (type == typeof(DateOnly))
+                return DateOnly.Parse(
+                    value.GetString()!,
+                    CultureInfo.InvariantCulture);
+
             if (type == typeof(DateTime))
                 return DateTime.Parse(
                     value.GetString()!,

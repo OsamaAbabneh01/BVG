@@ -48,11 +48,11 @@ namespace Infrastructure.Repositories
             return await _dbSet.Where(expression).ToListAsync();
         }
 
-        public IQueryable<T> Query(List<DynamicFilter> filters)
+        public IQueryable<T> Query(DynamicFilterGroup filterGroup)
         {
             return _dbSet
                 .AsNoTracking()
-                .ApplyDynamicFilters(filters, "AND")
+                .ApplyDynamicFilters(filterGroup)
                 .AsQueryable();
         }
     }

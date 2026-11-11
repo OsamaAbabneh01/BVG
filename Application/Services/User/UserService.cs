@@ -59,7 +59,7 @@ namespace Application.Services
 
         public async Task<PaginatedResultDto> GetAllUsers(DynamicPaginationDto dto)
         {
-            var query = _userRepository.Query(dto.Filters);
+            var query = _userRepository.Query(dto.Groups);
 
             var result = await query.PagenateAsync(dto.PageNumber, dto.PageSize);
 

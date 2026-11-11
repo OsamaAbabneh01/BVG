@@ -19,6 +19,6 @@ namespace Domain.Interfaces
 
         Task<User?> GetByUsernameWithPermissions(string username);
 
-        IQueryable<User> Query(List<DynamicFilter> filters);
+        IQueryable<User> Query(DynamicFilterGroup filterGroup);
     }
 }

@@ -799,3 +799,147 @@ namespace BVG.Infrastructure.Common
         }
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+=========================================================================================================================
+using BVG.Domain.Enums;
+using System;
+using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
+using System.Text;
+using System.Text.Json;
+
+namespace BVG.Domain.DTOs
+{
+    public sealed record DynamicFilter(string Field, string Operator, JsonElement Value);
+
+    public class FilterGroupDto
+    {
+        public string InnerOperator { get; set; } = "AND";
+
+        public string OuterOperator { get; set; } = "AND";
+
+        public List<DynamicFilter> Filters { get; set; } = new();
+    }
+
+    public class FilterOptionsDto
+    {
+        public List<FilterGroupDto> Groups { get; set; } = new();
+    }
+
+    public class DynamicPaginationDto
+    {
+        [Range(1, 50000)]
+        public int PageNumber { get; set; } = 1;
+
+        [Range(1, 100)]
+        public int PageSize { get; set; } = 10;
+
+        [Required]
+        [MaxLength(100)]
+        public string OrderBy { get; set; } = string.Empty;
+
+        [EnumDataType(typeof(OrderDirectionEnum))]
+        public OrderDirectionEnum OrderDirection { get; set; } = OrderDirectionEnum.DESC;
+
+        public FilterOptionsDto FilterOptions { get; set; } = new();
+    }
+
+    public class PaginationResponseDto
+    {
+        public object Data { get; set; } = new();
+        public int PageNumber { get; set; }
+        public int PageSize { get; set; }
+        public int TotalCount { get; set; }
+    }
+
+    public class PaginatorResponseDto<T>
+    {
+        public IQueryable<T> Query { get; set; } = null!;
+
+        public int TotalCount { get; set; }
+    }
+}
+
+
+
+
+
+
+
+
+=============================================================================================================================
+        public static IQueryable<T> OrderByProperty<T>(this IQueryable<T> source, string propertyName, bool desc)
+        {
+            var type = typeof(T);
+            var property = type.GetProperty(propertyName);
+            if (property == null) return source;
+
+            var parameter = Expression.Parameter(type, "p");
+            var propertyAccess = Expression.MakeMemberAccess(parameter, property);
+            var orderByExpression = Expression.Lambda(propertyAccess, parameter);
+
+            string methodName = desc ? "OrderByDescending" : "OrderBy";
+            var resultExpression = Expression.Call(
+            typeof(Queryable),
+            methodName,
+            new Type[] { type, property.PropertyType },
+            source.Expression,
+            Expression.Quote(orderByExpression));
+
+            return source.Provider.CreateQuery<T>(resultExpression);
+        }
+
+================================================================================================================================
+public async Task<BVGResponse<PaginationResponseDto>> GetAllRoles(DynamicPaginationDto dto)
+{
+    var query = _roleRepository.Query(dto.FilterOptions);
+
+    bool columnExists = typeof(Role).GetProperties().Any(p => p.Name.Equals(dto.OrderBy, StringComparison.OrdinalIgnoreCase));
+
+    if (!columnExists)
+    {
+        return BVGResponse<PaginationResponseDto>.Fail(BVGStatusCode.BadRequest, BVGErrorCode.InvalidColumnNameInOrderBy);
+    }
+
+    bool isDescending = dto.OrderDirection == OrderDirectionEnum.DESC;
+    query = query.OrderByProperty(dto.OrderBy, isDescending);
+
+    var result = await _paginatorService.PaginateAsync(query, dto.PageNumber, dto.PageSize);
+
+    var data = await result.Query
+        .Select(x => new GetAllRolesResponseDto
+        {
+            Id = x.Id,
+            NameEn = x.RoleName,
+            NameAr = x.NameAr,
+            Description = x.Description,
+            Permissions = x.RolePermissions.Select(rp => rp.Permission == null ? new() : new PermissionDto
+            {
+                Id = rp.Permission.Id,
+                NameEn = rp.Permission.PermissionName,
+                NameAr = rp.Permission.NameAr
+
+            }).ToList()
+        }).ToListAsync();
+
+    return BVGResponse<PaginationResponseDto>.Success(
+        new PaginationResponseDto
+        {
+            Data = data,
+            PageNumber = dto.PageNumber,
+            PageSize = dto.PageSize,
+            TotalCount = result.TotalCount
+        },
+        BVGMessage.ReturnSuccessfully,
+        BVGStatusCode.Ok);
+}
